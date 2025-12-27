@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>bbb 投資戰情室 - 自動同步版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root { --bg-color: #FDFBF7; --sidebar-bg: #F5F2EB; --text-primary: #2C3E50; --accent-color: #8B7355; --border-color: #E5E0D8; }
+        body { background-color: var(--bg-color); color: var(--text-primary); font-family: sans-serif; height: 100vh; overflow: hidden; }
+        .section-card { background: white; border: 1px solid var(--border-color); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+        .alert-flash-red { animation: flash-red 1s infinite; }
+        @keyframes flash-red { 0%, 100% { background-color: #fee2e2; } 50% { background-color: #ef4444; color: white; } }
+        .alert-flash-green { animation: flash-green 1s infinite; }
+        @keyframes flash-green { 0%, 100% { background-color: #d1fae5; } 50% { background-color: #10b981; color: white; } }
+    </style>
+</head>
+<body class="flex flex-col">
+    <header class="bg-[#ECE8DE] h-12 flex items-center px-6 border-b border-[#DCD6C9] shrink-0 justify-between">
+        <div class="font-bold text-lg tracking-widest text-[#5A4A42]">bbb ANALYTICS <span class="text-xs font-normal ml-2 text-gray-400">● 自動同步中</span></div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden">
+        <aside class="w-1/6 bg-[#F5F2EB] border-r border-[#DCD6C9] flex flex-col sidebar">
+            <div class="p-3 border-b border-[#E5E0D8]">
+                <input type="text" id="searchInput" placeholder="搜尋..." class="w-full border rounded px-3 py-1.5 text-sm">
+            </div>
+            <div id="stockListContainer" class="flex-1 overflow-y-auto p-2"></div>
+        </aside>
+
+        <main class="w-5/6 overflow-y-auto p-6" id="mainContent">
+            <div id="emptyState" class="h-full flex flex-col items-center justify-center text-gray-400">
+                <i class="fas fa-sync fa-spin text-4xl mb-4"></i>
+                <p>正在從雲端同步 bbb 分析報告...</p>
+            </div>
+
+            <div id="reportContainer" class="hidden max-w-7xl mx-auto space-y-6">
+                <div class="flex justify-between items-end border-b-2 border-[#8B7355] pb-2">
+                    <div>
+                        <h1 class="text-3xl font-bold"><span id="stockId" class="text-[#8B7355]"></span> <span id="stockName"></span></h1>
+                        <p class="text-xs text-gray-500">最後更新：<span id="updateDate"></span></p>
+                    </div>
+                    <div class="text-right">
+                        <div id="priceDisplay" class="text-3xl font-mono font-bold"></div>
+                        <div id="priceChange" class="text-sm"></div>
+                    </div>
+                </div>
+
+                <div class="section-card bg-[#FFFDF5]">
+                    <textarea id="memoArea" class="w-full bg-transparent border-none outline-none" rows="2" placeholder="備忘錄..."></textarea>
+                </div>
+
+                <div class="section-card h-80">
+                    <h3 class="font-bold mb-2">PE 河流圖</h3>
+                    <canvas id="peRiverChart"></canvas>
+                </div>
+
+                <div class="section-card border-l-8 border-[#8B7355]">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="font-bold">技術分析報告 (結構校正 C: <span id="correctionC"></span>)</h3>
+                        <div id="bollingerAlert" class="px-4 py-1 rounded-full text-xs font-bold"></div>
+                    </div>
+                    <p id="klineAnalysis" class="text-sm leading-relaxed mb-4"></p>
+                    <div class="grid grid-cols-3 gap-4">
+                        <div class="bg-gray-50 p-3 rounded text-center"><div class="text-xs text-gray-400">30D 預測</div><div id="pred30" class="font-bold"></div></div>
+                        <div class="bg-gray-50 p-3 rounded text-center"><div class="text-xs text-gray-400">180D 預測</div><div id="pred180" class="font-bold"></div></div>
+                        <div class="bg-gray-50 p-3 rounded text-center"><div class="text-xs text-gray-400">360D 預測</div><div id="pred360" class="font-bold"></div></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <textarea id="jsonRawInput" class="hidden"></textarea>
+
+    <script>
+        const SYNC_CONFIG = {
+            // 自動轉換您的 pubhtml 為 csv 格式
+            csvUrl: "https://docs.google.com/spreadsheets/d/e/2PACX-1vTawGYibgdgQSN-zycFOuDQxvvKMFipp5HOhI3YhNXmbgGKmFy5YJ9ztsGSmrTxfiq-fJknVRwgaXmd/pub?output=csv",
+            interval: 30000 
+        };
+
+        let stocks = [];
+        let currentStockId = null;
+        let peRiverChartInstance = null;
+
+        async function autoSync() {
+            try {
+                const res = await fetch(SYNC_CONFIG.csvUrl + "&cache=" + Date.now());
+                const csv = await res.text();
+                const rows = csv.split('\n');
+                if (rows.length > 1) {
+                    let rawJson = rows[1].substring(rows[1].indexOf('{'));
+                    if (rawJson.endsWith('"')) rawJson = rawJson.slice(0, -1);
+                    rawJson = rawJson.replace(/""/g, '"');
+                    
+                    const data = JSON.parse(rawJson);
+                    const local = stocks.find(s => s.id === data.id);
+                    if (!local || local.lastUpdated !== data.lastUpdated) {
+                        document.getElementById('jsonRawInput').value = rawJson;
+                        processJsonImport();
+                    }
+                }
+            } catch (e) { console.error("同步失敗:", e); }
+        }
+
+        function processJsonImport() {
+            const data = JSON.parse(document.getElementById('jsonRawInput').value);
+            const idx = stocks.findIndex(s => s.id === data.id);
+            if (idx !== -1) { stocks[idx] = data; } else { stocks.unshift(data); }
+            localStorage.setItem('bbb_stocks', JSON.stringify(stocks));
+            renderSidebar();
+            loadStock(data.id);
+        }
+
+        function loadStock(id) {
+            currentStockId = id;
+            const data = stocks.find(s => s.id === id);
+            document.getElementById('emptyState').classList.add('hidden');
+            document.getElementById('reportContainer').classList.remove('hidden');
+            
+            document.getElementById('stockId').innerText = data.id;
+            document.getElementById('stockName').innerText = data.name;
+            document.getElementById('updateDate').innerText = data.lastUpdated;
+            document.getElementById('priceDisplay').innerText = data.basicInfo.price;
+            document.getElementById('priceChange').innerText = data.basicInfo.changePercent;
+            document.getElementById('correctionC').innerText = data.technical.correctionC;
+            document.getElementById('klineAnalysis').innerText = data.technical.analysis;
+            document.getElementById('pred30').innerText = data.technical.predictions.days30;
+            document.getElementById('pred180').innerText = data.technical.predictions.days180;
+            document.getElementById('pred360').innerText = data.technical.predictions.days360;
+
+            // 布林閃爍提醒
+            const alert = document.getElementById('bollingerAlert');
+            alert.innerText = data.technical.bollinger.alert || "";
+            alert.className = "px-4 py-1 rounded-full text-xs font-bold " + 
+                (data.technical.bollinger.status === 'lower_band_touch' ? 'alert-flash-green' : 
+                 data.technical.bollinger.status === 'upper_band_touch' ? 'alert-flash-red' : 'bg-gray-100');
+
+            renderPeChart(data.chartsData.peRiverData);
+        }
+
+        function renderPeChart(river) {
+            if (peRiverChartInstance) peRiverChartInstance.destroy();
+            const ctx = document.getElementById('peRiverChart').getContext('2d');
+            peRiverChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: river.dates,
+                    datasets: [
+                        { label: '股價', data: river.price, borderColor: '#2C3E50', borderWidth: 3 },
+                        { label: 'PE 20x', data: river.pe20, borderColor: 'rgba(192, 57, 43, 0.2)', fill: false },
+                        { label: 'PE 12x', data: river.pe12, borderColor: 'rgba(33, 140, 116, 0.2)', fill: false }
+                    ]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+        }
+
+        function renderSidebar() {
+            const container = document.getElementById('stockListContainer');
+            container.innerHTML = stocks.map(s => `
+                <div onclick="loadStock('${s.id}')" class="p-3 mb-2 bg-white rounded shadow-sm cursor-pointer border-l-4 ${s.id === currentStockId ? 'border-[#8B7355]' : 'border-transparent'}">
+                    <div class="font-bold">${s.id} ${s.name}</div>
+                    <div class="text-xs text-gray-500">${s.technical.marketStatus}</div>
+                </div>
+            `).join('');
+        }
+
+        function loadFromStorage() {
+            const saved = localStorage.getItem('bbb_stocks');
+            if (saved) stocks = JSON.parse(saved);
+        }
+
+        window.onload = () => { loadFromStorage(); renderSidebar(); setInterval(autoSync, 30000); autoSync(); };
+    </script>
+</body>
+</html>
